@@ -8,18 +8,18 @@ import (
 
 var orders []models.Order
 
-type Order struct {
+type OrderRepo struct {
 	orders []models.Order
 	sync.Mutex
 }
 
-func NewOrder() *Order {
-	return &Order{
+func NewOrder() *OrderRepo {
+	return &OrderRepo{
 		orders: orders,
 	}
 }
 
-func (o *Order) CreateOrder(ctx context.Context, order models.Order) (id int, err error) {
+func (o *OrderRepo) CreateOrder(ctx context.Context, order models.Order) (id int, err error) {
 	o.Lock()
 	defer o.Unlock()
 	if len(o.orders) > 0 {
@@ -34,7 +34,7 @@ func (o *Order) CreateOrder(ctx context.Context, order models.Order) (id int, er
 	return
 }
 
-func (o *Order) DeleteOrder(ctx context.Context, id int) error {
+func (o *OrderRepo) DeleteOrder(ctx context.Context, id int) error {
 	o.Lock()
 	defer o.Unlock()
 	var newOrders []models.Order

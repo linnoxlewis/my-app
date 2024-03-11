@@ -25,22 +25,23 @@ func NewRoomService(roomRepo roomRepo, logger log.Logging) *RoomService {
 	}
 }
 
-func (r *RoomService) ReserveRooms(availability []models.RoomAvailability,
-	daysToBook []time.Time,
-	order dto.Order) error {
-	availabilityMap := make(map[string]int, len(availability))
+func (r *RoomService) ReserveRoom(ctx context.Context, reserveRooms dto.ReserveRooms) error {
+	availability, err := r.GetAvailabilityRooms(ctx)
+	if err != nil {
+		return err
+	}
 
+	availabilityMap := make(map[string]int, len(availability))
 	getHashKey := func(hotelId, roomId string, date time.Time) string {
 		return fmt.Sprintf("%s-%s-%s", hotelId, roomId, date)
 	}
-
 	for key, value := range availability {
 		hashKey := getHashKey(value.HotelID, value.RoomID, value.Date)
 		availabilityMap[hashKey] = key
 	}
 
-	for _, dayToBook := range daysToBook {
-		key := getHashKey(order.HotelID, order.RoomID, dayToBook)
+	for _, dayToBook := range reserveRooms.Dates {
+		key := getHashKey(reserveRooms.HotelID, reserveRooms.RoomID, dayToBook)
 		if idx, exists := availabilityMap[key]; exists {
 			if availability[idx].Quota > 0 {
 				availability[idx].Quota--
@@ -50,6 +51,10 @@ func (r *RoomService) ReserveRooms(availability []models.RoomAvailability,
 		} else {
 			return models.ErrNotFoundInformation
 		}
+	}
+
+	if err := r.UpdateAvailabilityRooms(ctx, availability); err != nil {
+		return err
 	}
 
 	return nil

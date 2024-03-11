@@ -20,14 +20,14 @@ func InitApp(ctx context.Context) {
 	roomRepo := repository.NewRoom()
 	orderRepo := repository.NewOrder()
 
-	roomService := service.NewRoomService(roomRepo, logger)
-	orderSrv := service.NewOrder(orderRepo, roomService, logger)
+	roomSrv := service.NewRoomService(roomRepo, logger)
+	orderSrv := service.NewOrderService(orderRepo, roomSrv, logger)
 
 	orderController := controllers.NewOrderController(orderSrv)
-	srv := rest.NewRestServer(cfg.GetAddress(), orderController, logger)
+	server := rest.NewRestServer(cfg.GetAddress(), orderController, logger)
 
-	go srv.StartServer()
-	defer srv.StopServer(ctx)
+	go server.StartServer()
+	defer server.StopServer(ctx)
 
 	quit := make(chan os.Signal)
 

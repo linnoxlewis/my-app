@@ -6,14 +6,12 @@ import (
 	"applicationDesignTest/internal/models/dto"
 	"applicationDesignTest/pkg/log"
 	"context"
+	"errors"
 	"sync"
-	"time"
 )
 
 type roomService interface {
-	ReserveRooms(availability []models.RoomAvailability,
-		daysToBook []time.Time,
-		order dto.Order) error
+	ReserveRoom(ctx context.Context, reserveRoom dto.ReserveRooms) error
 	GetAvailabilityRooms(ctx context.Context) ([]models.RoomAvailability, error)
 	UpdateAvailabilityRooms(ctx context.Context, availability []models.RoomAvailability) error
 }
@@ -30,7 +28,7 @@ type OrderService struct {
 	sync.Mutex
 }
 
-func NewOrder(orderRepo orderRepo, roomService roomService, logger log.Logging) *OrderService {
+func NewOrderService(orderRepo orderRepo, roomService roomService, logger log.Logging) *OrderService {
 	return &OrderService{
 		orderRepo:   orderRepo,
 		roomService: roomService,
@@ -38,52 +36,63 @@ func NewOrder(orderRepo orderRepo, roomService roomService, logger log.Logging) 
 	}
 }
 
-func (o *OrderService) CreateOrder(ctx context.Context, orderRqt dto.Order) (*models.Order, error) {
-	order := models.Order{HotelID: orderRqt.HotelID,
+func (o *OrderService) CreateOrder(ctx context.Context, orderRqt dto.Order) (order *models.Order, err error) {
+	var orderId int
+	order = &models.Order{HotelID: orderRqt.HotelID,
 		RoomID:    orderRqt.RoomID,
 		UserEmail: orderRqt.UserEmail,
 		From:      orderRqt.From,
 		To:        orderRqt.To,
 	}
-
 	daysToBook := helpers.DaysBetween(order.From, order.To)
-	unavailableDays := make(map[time.Time]struct{}, len(daysToBook))
-	for _, day := range daysToBook {
-		unavailableDays[day] = struct{}{}
-	}
 
 	//TODO: не лучшее решение - используем блокировки мютексом на уровне сервиса, так как у нас in-memory хранилище с отсутствием блокировок и транзакций.
 	//TODO: также отсутствует транзакция, по той же причине.
 	o.Lock()
 	defer o.Unlock()
 
-	availability, err := o.roomService.GetAvailabilityRooms(ctx)
-	if err != nil {
-		o.logger.LogErrorf("error get availability rooms: %s", err)
-		return nil, err
-	}
+	//Механизм роллбэка,в случае непредвиденной ошибки
+	availabilitySnapshot, err := o.roomService.GetAvailabilityRooms(ctx)
+	defer func() {
+		if err != nil {
+			if errors.Is(err, models.ErrNotAvailableRooms) ||
+				errors.Is(err, models.ErrNotAvailableRooms) {
+				return
+			}
+			o.logger.LogInfo("start rollback availability")
+			err = o.roomService.UpdateAvailabilityRooms(ctx, availabilitySnapshot)
+			if err != nil {
+				o.logger.LogErrorf("error rollback availability: %s", err)
+				return
+			}
 
-	if err = o.roomService.ReserveRooms(availability, daysToBook, orderRqt); err != nil {
+			if orderId != 0 {
+				o.logger.LogInfo("start rollback order id")
+				if err = o.orderRepo.DeleteOrder(ctx, orderId); err != nil {
+					o.logger.LogErrorf("error rollback availability: %s", err)
+					return
+				}
+			}
+		}
+	}()
+
+	reserveRoomRqt := dto.ReserveRooms{HotelID: orderRqt.HotelID,
+		RoomID: orderRqt.RoomID,
+		Dates:  daysToBook}
+	if err := o.roomService.ReserveRoom(ctx, reserveRoomRqt); err != nil {
 		o.logger.LogErrorf("error reservation rooms: %s", err)
+
 		return nil, err
 	}
 
-	orderId, err := o.orderRepo.CreateOrder(ctx, order)
+	orderId, err = o.orderRepo.CreateOrder(ctx, *order)
 	if err != nil {
 		o.logger.LogErrorf("error create order: %s", err)
-		return nil, err
-	}
-
-	if err = o.roomService.UpdateAvailabilityRooms(ctx, availability); err != nil {
-		o.logger.LogErrorf("error update availability rooms: %s", err)
-		if deleteErr := o.orderRepo.DeleteOrder(ctx, orderId); deleteErr != nil {
-			o.logger.LogErrorf("error rolling back order creation: %s", deleteErr)
-		}
 		return nil, err
 	}
 
 	order.ID = orderId
 	o.logger.LogInfo("success create order for: %s", order.UserEmail)
 
-	return &order, err
+	return order, err
 }
